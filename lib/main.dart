@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
@@ -42,6 +45,13 @@ class _ScannerPageState extends State<ScannerPage> {
   }
 
   Future<void> _startScan() async {
+    // Request permissions
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+
     setState(() {
       _scanResults.clear();
       _isScanning = true;
@@ -49,10 +59,33 @@ class _ScannerPageState extends State<ScannerPage> {
       _glucoseReading = null;
     });
 
+    // Check if Bluetooth is enabled, and try to enable it on Android
+    if (Platform.isAndroid) {
+      try {
+        await FlutterBluePlus.turnOn();
+      } catch (e) {
+        setState(() {
+          _status = 'User denied turning on Bluetooth';
+          _isScanning = false;
+        });
+        return;
+      }
+    }
+
     // Wait for Bluetooth to be on
-    await FlutterBluePlus.adapterState
-        .where((s) => s == BluetoothAdapterState.on)
-        .first;
+    // This handles both the successful turnOn case and if it was already on
+    try {
+      await FlutterBluePlus.adapterState
+          .where((s) => s == BluetoothAdapterState.on)
+          .first
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      setState(() {
+        _status = 'Bluetooth is not enabled';
+        _isScanning = false;
+      });
+      return;
+    }
 
     // Listen to scan results and keep only Accu-Chek Instant devices
     final subscription = FlutterBluePlus.onScanResults.listen((results) {
@@ -80,12 +113,20 @@ class _ScannerPageState extends State<ScannerPage> {
     // Ensure subscription is cancelled when scan completes
     FlutterBluePlus.cancelWhenScanComplete(subscription);
 
-    await FlutterBluePlus.startScan(
-      timeout: const Duration(seconds: 10),
-      withNames: const ['Accu-Chek Instant'],
-      androidScanMode: AndroidScanMode.lowLatency,
-      androidUsesFineLocation: true,
-    );
+    try {
+      await FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 10),
+        withNames: const ['Accu-Chek Instant'],
+        androidScanMode: AndroidScanMode.lowLatency,
+        androidUsesFineLocation: true,
+      );
+    } catch (e) {
+      setState(() {
+        _status = 'Start scan failed: $e';
+        _isScanning = false;
+      });
+      return;
+    }
 
     setState(() {
       _isScanning = false;
